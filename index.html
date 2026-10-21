@@ -51,7 +51,7 @@
             background-color: #0056b3;
         }
         #scan-button {
-            background-color: #28a745; /* Cor verde para o botão de escanear */
+            background-color: #28a745;
         }
         #scan-button:hover {
             background-color: #218838;
@@ -61,7 +61,7 @@
             border: 1px solid #ccc;
             border-radius: 4px;
             margin-top: 15px;
-            display: none; /* Começa escondido */
+            display: none;
         }
     </style>
 </head>
@@ -79,63 +79,71 @@
         <button onclick="redirecionar()">Gerar PDF</button>
     </div>
 
-    <!-- Biblioteca de JavaScript para ler QR Code. Essencial para funcionar. -->
+    <!-- Biblioteca de JavaScript para ler QR Code -->
     <script src="https://unpkg.com/html5-qrcode/html5-qrcode.min.js"></script>
 
     <script>
         let html5QrCode = null;
 
-        // Função para iniciar o scanner
+        // Função para iniciar o scanner com suporte otimizado
         function startScanner() {
             const qrReaderDiv = document.getElementById('qr-reader');
-            qrReaderDiv.style.display = 'block'; // Mostra o leitor de vídeo
+            qrReaderDiv.style.display = 'block';
 
             if (html5QrCode && html5QrCode.isScanning) {
-                return; // Se já estiver escaneando, não faz nada
+                return;
             }
             
-            html5QrCode = new Html5Qrcode("qr-reader");
-            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+            // Instancia com suporte ao detector nativo e restrição de formato QR Code
+            html5QrCode = new Html5Qrcode("qr-reader", {
+                useBarCodeDetectorIfSupported: true,
+                formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ]
+            });
+
+            const config = { 
+                fps: 15, 
+                qrbox: { width: 280, height: 280 },
+                aspectRatio: 1.0,
+                videoConstraints: {
+                    facingMode: "environment",
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                }
+            };
+
             html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, (errorMessage) => {
                 // Erros de leitura podem ser ignorados
+            }).catch(err => {
+                console.error("Erro ao iniciar câmera:", err);
+                alert("Não foi possível iniciar a câmera.");
             });
         }
 
-        // --- FUNÇÃO MODIFICADA ---
         // Função chamada quando o QR Code é lido com sucesso
         function onScanSuccess(decodedText, decodedResult) {
             console.log(`URL do QR Code: ${decodedText}`);
             let chaveExtraida = '';
 
             try {
-                // Tenta tratar o texto decodificado como uma URL
                 const url = new URL(decodedText);
-                
-                // Procura pelo parâmetro 'chCTe' na URL
                 const chave = url.searchParams.get("chCTe");
 
                 if (chave) {
-                    chaveExtraida = chave; // Se encontrou, usa a chave
+                    chaveExtraida = chave;
                     console.log(`Chave extraída da URL: ${chaveExtraida}`);
                 } else {
-                    // Se não encontrou o parâmetro, usa o texto completo como alternativa
                     chaveExtraida = decodedText;
                     console.warn("Parâmetro 'chCTe' não encontrado. Usando o texto completo.");
                 }
             } catch (e) {
-                // Se o texto do QR Code não for uma URL válida, usa o texto como está
                 chaveExtraida = decodedText;
                 console.error("O conteúdo do QR Code não é uma URL válida. Usando o texto completo.");
             }
 
-            // Coloca a chave extraída no campo de input
             document.getElementById('chaveDeAcesso').value = chaveExtraida;
-
-            // Para a câmera para economizar recursos
             stopScanner();
         }
         
-        // Função para parar o scanner e esconder o vídeo
         function stopScanner() {
             if (html5QrCode && html5QrCode.isScanning) {
                 html5QrCode.stop().then(ignore => {
@@ -144,12 +152,10 @@
                     console.error("Falha ao parar o scanner.", err);
                 });
             }
-            document.getElementById('qr-reader').style.display = 'none'; // Esconde o leitor de vídeo
+            document.getElementById('qr-reader').style.display = 'none';
         }
 
-        // Função para gerar o PDF, agora com limpeza de caracteres
         function redirecionar() {
-            // Pega o valor digitado e remove tudo que não for número
             var chave = document.getElementById('chaveDeAcesso').value.replace(/\D/g, '');
 
             if (chave) {

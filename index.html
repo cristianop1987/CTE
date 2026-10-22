@@ -10,7 +10,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             background-color: #f4f4f4;
             margin: 0;
             padding: 15px;
@@ -58,10 +58,19 @@
         }
         #qr-reader {
             width: 100%;
-            border: 1px solid #ccc;
-            border-radius: 4px;
+            border-radius: 8px;
             margin-top: 15px;
             display: none;
+            background: #000;
+            overflow: hidden;
+            position: relative;
+        }
+        #qr-reader video {
+            touch-action: none;
+            object-fit: cover;
+        }
+        #qr-reader__scan_region {
+            min-height: 240px;
         }
     </style>
 </head>
@@ -73,7 +82,7 @@
         
         <div id="qr-reader"></div>
         
-        <button id="scan-button" onclick="startScanner()">Escanear QR Code</button>
+        <button id="scan-button" onclick="toggleScanner()">Escanear QR Code</button>
 
         <input type="text" id="chaveDeAcesso" placeholder="A chave de acesso aparecerá aqui">
         <button onclick="redirecionar()">Gerar PDF</button>
@@ -84,6 +93,26 @@
 
     <script>
         let html5QrCode = null;
+        let cameraAtiva = false;
+
+        // Variáveis de zoom por pinça e foco
+        let zoomMin = 1;
+        let zoomMax = 1;
+        let zoomAtual = 1;
+        let zoomStep = 0.1;
+        let zoomDisponivel = false;
+        let distanciaInicialPinch = 0;
+        let zoomInicialPinch = 1;
+        let ultimoZoomAplicado = 0;
+        let aplicandoZoom = false;
+
+        function toggleScanner() {
+            if (!cameraAtiva) {
+                startScanner();
+            } else {
+                stopScanner();
+            }
+        }
 
         // Função para iniciar o scanner com suporte otimizado
         function startScanner() {
@@ -94,30 +123,163 @@
                 return;
             }
             
-            // Instancia com suporte ao detector nativo e restrição de formato QR Code
             html5QrCode = new Html5Qrcode("qr-reader", {
                 useBarCodeDetectorIfSupported: true,
                 formatsToSupport: [ Html5QrcodeSupportedFormats.QR_CODE ]
             });
 
             const config = { 
-                fps: 15, 
-                qrbox: { width: 280, height: 280 },
+                fps: 20, 
+                qrbox: (viewfinderWidth, viewfinderHeight) => {
+                    const lado = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.78);
+                    return { width: Math.max(180, lado), height: Math.max(180, lado) };
+                },
                 aspectRatio: 1.0,
+                disableFlip: true,
                 videoConstraints: {
                     facingMode: "environment",
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 }
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
                 }
             };
 
             html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, (errorMessage) => {
                 // Erros de leitura podem ser ignorados
+            }).then(() => {
+                cameraAtiva = true;
+                const btn = document.getElementById('scan-button');
+                btn.innerText = "Desligar Câmera";
+                btn.style.backgroundColor = "#dc3545";
+                setTimeout(prepararZoomManual, 700);
             }).catch(err => {
-                console.error("Erro ao iniciar câmera:", err);
-                alert("Não foi possível iniciar a câmera.");
+                console.warn("Tentando modo alternativo de câmera...", err);
+                html5QrCode.start({ facingMode: "environment" }, {
+                    fps: 15,
+                    qrbox: (viewfinderWidth, viewfinderHeight) => {
+                        const lado = Math.floor(Math.min(viewfinderWidth, viewfinderHeight) * 0.75);
+                        return { width: Math.max(180, lado), height: Math.max(180, lado) };
+                    },
+                    aspectRatio: 1.0,
+                    disableFlip: true
+                }, onScanSuccess).then(() => {
+                    cameraAtiva = true;
+                    const btn = document.getElementById('scan-button');
+                    btn.innerText = "Desligar Câmera";
+                    btn.style.backgroundColor = "#dc3545";
+                    setTimeout(prepararZoomManual, 700);
+                }).catch(e => {
+                    console.error("Erro ao iniciar câmera:", e);
+                    alert("Não foi possível iniciar a câmera.");
+                    stopScanner();
+                });
             });
         }
+
+        async function prepararZoomManual() {
+            zoomDisponivel = false;
+            if (!html5QrCode || !cameraAtiva) return;
+
+            try {
+                const caps = html5QrCode.getRunningTrackCapabilities();
+                const zoom = caps && caps.zoom;
+
+                try {
+                    await html5QrCode.applyVideoConstraints({
+                        advanced: [{ focusMode: 'continuous' }]
+                    });
+                } catch (_) {}
+
+                if (zoom && typeof zoom.min === 'number' &&
+                    typeof zoom.max === 'number' && zoom.max > zoom.min) {
+                    zoomMin = zoom.min;
+                    zoomMax = zoom.max;
+                    zoomStep = Number(zoom.step) || Math.max(0.1, (zoomMax - zoomMin) / 100);
+
+                    const settings = html5QrCode.getRunningTrackSettings
+                        ? html5QrCode.getRunningTrackSettings()
+                        : {};
+                    const zoomAtualCamera = settings && typeof settings.zoom === 'number'
+                        ? settings.zoom : zoomMin;
+                    const zoomInicialDesejado = Math.max(2, zoomMin + (zoomMax - zoomMin) * 0.20);
+                    zoomAtual = Math.max(zoomMin, Math.min(zoomMax,
+                        Math.max(zoomAtualCamera, zoomInicialDesejado)));
+                    zoomDisponivel = true;
+
+                    const aplicado = await aplicarZoomNativo(zoomAtual);
+                    if (!aplicado) {
+                        zoomAtual = zoomAtualCamera;
+                        zoomDisponivel = false;
+                    }
+                } else {
+                    zoomMin = 1;
+                    zoomMax = 1;
+                    zoomAtual = 1;
+                }
+            } catch (e) {
+                zoomDisponivel = false;
+                console.debug('Controles avançados da câmera indisponíveis:', e);
+            }
+        }
+
+        async function aplicarZoomNativo(valor) {
+            if (!html5QrCode) return false;
+            try {
+                await html5QrCode.applyVideoConstraints({
+                    advanced: [{ zoom: valor }]
+                });
+                return true;
+            } catch (_) {
+                try {
+                    await html5QrCode.applyVideoConstraints({ zoom: valor });
+                    return true;
+                } catch (e) {
+                    return false;
+                }
+            }
+        }
+
+        function distanciaEntreDedos(touches) {
+            const dx = touches[0].clientX - touches[1].clientX;
+            const dy = touches[0].clientY - touches[1].clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Ouvintes de pinça para zoom na tela de leitura
+        setTimeout(() => {
+            const areaCamera = document.getElementById('qr-reader');
+            if (areaCamera) {
+                areaCamera.style.touchAction = 'none';
+                areaCamera.addEventListener('touchstart', (event) => {
+                    if (!cameraAtiva || event.touches.length !== 2) return;
+                    event.preventDefault();
+                    distanciaInicialPinch = distanciaEntreDedos(event.touches);
+                    zoomInicialPinch = zoomAtual;
+                    ultimoZoomAplicado = 0;
+                }, { passive: false });
+
+                areaCamera.addEventListener('touchmove', (event) => {
+                    if (!cameraAtiva || event.touches.length !== 2 || !distanciaInicialPinch) return;
+                    event.preventDefault();
+                    if (!zoomDisponivel || aplicandoZoom) return;
+                    const distanciaAtual = distanciaEntreDedos(event.touches);
+                    const escala = distanciaAtual / distanciaInicialPinch;
+                    let novoZoom = Math.max(zoomMin, Math.min(zoomMax, zoomInicialPinch * escala));
+                    novoZoom = Math.round(novoZoom / zoomStep) * zoomStep;
+                    novoZoom = Math.max(zoomMin, Math.min(zoomMax, Number(novoZoom.toFixed(2))));
+                    if (Math.abs(novoZoom - zoomAtual) < zoomStep || Date.now() - ultimoZoomAplicado < 90) return;
+
+                    ultimoZoomAplicado = Date.now();
+                    aplicandoZoom = true;
+                    aplicarZoomNativo(novoZoom).then(aplicado => {
+                        if (aplicado) zoomAtual = novoZoom;
+                    }).finally(() => { aplicandoZoom = false; });
+                }, { passive: false });
+
+                const encerrarPinch = () => { distanciaInicialPinch = 0; };
+                areaCamera.addEventListener('touchend', encerrarPinch, { passive: true });
+                areaCamera.addEventListener('touchcancel', encerrarPinch, { passive: true });
+            }
+        }, 500);
 
         // Função chamada quando o QR Code é lido com sucesso
         function onScanSuccess(decodedText, decodedResult) {
@@ -145,10 +307,15 @@
         }
         
         function stopScanner() {
-            if (html5QrCode && html5QrCode.isScanning) {
-                html5QrCode.stop().then(ignore => {
+            if (html5QrCode && cameraAtiva) {
+                html5QrCode.stop().then(() => {
+                    cameraAtiva = false;
+                    const btn = document.getElementById('scan-button');
+                    btn.innerText = "Escanear QR Code";
+                    btn.style.backgroundColor = "#28a745";
                     console.log("Scanner parado.");
                 }).catch(err => {
+                    cameraAtiva = false;
                     console.error("Falha ao parar o scanner.", err);
                 });
             }
